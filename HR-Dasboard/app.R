@@ -1,0 +1,336 @@
+# =======================
+# LIBRARIES
+# =======================
+library(shiny)
+library(shinydashboard)
+library(dplyr)
+library(ggplot2)
+library(leaflet)
+library(DT)
+library(readxl)
+library(scales)
+
+# =======================
+# LOAD DATA
+# =======================
+file <- "../hr.xlsx"
+
+employees   <- read_excel(file, sheet = "employees")
+departments <- read_excel(file, sheet = "departments")
+jobs        <- read_excel(file, sheet = "jobs")
+locations   <- read_excel(file, sheet = "locations")
+
+# =======================
+# DATA CLEANING
+# =======================
+employees <- employees %>%
+  mutate(
+    SALARY = as.numeric(SALARY),
+    HIRE_DATE = as.Date(HIRE_DATE)
+  )
+
+# =======================
+# JOIN DATA
+# =======================
+emp_data <- employees %>%
+  left_join(departments, by = "DEPARTMENT_ID") %>%
+  left_join(jobs, by = "JOB_ID") %>%
+  left_join(locations, by = c("LOCATION_ID" = "LOCATION_ID")) %>%
+  mutate(
+    Lat = as.numeric(Lat),
+    Lon = as.numeric(Lon)
+  ) %>%
+  filter(!is.na(SALARY), !is.na(HIRE_DATE))
+
+# =======================
+# SELECT INPUT CHOICES
+# =======================
+dept_choices <- c("All", sort(unique(na.omit(emp_data$DEPARTMENT_NAME))))
+job_choices  <- c("All", sort(unique(na.omit(emp_data$JOB_TITLE))))
+
+# =======================
+# UI
+# =======================
+ui <- dashboardPage(
+  skin = "blue",
+  
+  dashboardHeader(title = "HRD Performance Dashboard"),
+  
+  dashboardSidebar(
+    selectInput("dept", "Pilih Departemen:", choices = dept_choices, selected = "All"),
+    selectInput("job", "Pilih Jabatan:", choices = job_choices, selected = "All"),
+    
+    sliderInput(
+      "salary", "Range Gaji:",
+      min = floor(min(emp_data$SALARY, na.rm = TRUE)),
+      max = ceiling(max(emp_data$SALARY, na.rm = TRUE)),
+      value = c(floor(min(emp_data$SALARY, na.rm = TRUE)), ceiling(max(emp_data$SALARY, na.rm = TRUE))),
+      pre = "Rp "
+    ),
+    
+    dateRangeInput(
+      "hiredate", "Range Tanggal Masuk:",
+      start = min(emp_data$HIRE_DATE, na.rm = TRUE),
+      end = max(emp_data$HIRE_DATE, na.rm = TRUE)
+    )
+  ),
+  
+  dashboardBody(
+    tags$head(
+      tags$style(HTML("
+        body, .content-wrapper, .right-side {
+          background-color: #121212;
+          color: #e0e0e0;
+        }
+
+        .box {
+          background-color: #1e1e1e;
+          border-top: 3px solid #1976d2;
+          color: #e0e0e0;
+        }
+
+        .main-header .logo, .main-header .navbar {
+          background-color: #0d47a1;
+        }
+
+        .main-sidebar {
+          background-color: #1e1e1e;
+        }
+
+        .sidebar-menu>li.active>a, .sidebar-menu>li:hover>a {
+          background-color: #1976d2;
+        }
+
+        .sidebar a {
+          color: #e0e0e0;
+        }
+
+        table.dataTable {
+          color: #e0e0e0 !important;
+          background-color: #1e1e1e !important;
+        }
+
+        table.dataTable thead th {
+          color: #ffffff !important;
+          background-color: #2c2c2c !important;
+        }
+
+        .dataTables_wrapper .dataTables_filter input,
+        .dataTables_wrapper .dataTables_length select,
+        .dataTables_wrapper .dataTables_info,
+        .dataTables_wrapper .dataTables_paginate {
+          color: #e0e0e0 !important;
+        }
+      "))
+    ),
+    
+    fluidRow(
+      valueBoxOutput("total_karyawan", width = 4),
+      valueBoxOutput("rata_gaji", width = 4),
+      valueBoxOutput("total_departemen", width = 4)
+    ),
+    
+    fluidRow(
+      box(
+        title = "Jumlah Karyawan per Departemen", width = 6,
+        solidHeader = TRUE, status = "primary", plotOutput("bar_dept", height = "300px")
+      ),
+      box(
+        title = "Distribusi Gaji", width = 6,
+        solidHeader = TRUE, status = "primary", plotOutput("hist_salary", height = "300px")
+      )
+    ),
+    
+    fluidRow(
+      box(
+        title = "Komposisi Karyawan per Departemen", width = 6,
+        solidHeader = TRUE, status = "primary", plotOutput("pie_dept", height = "338px")
+      ),
+      box(
+        title = "Sebaran Gaji per Departemen",
+        width = 6,
+        solidHeader = TRUE,
+        status = "primary",
+        plotOutput("boxplot_salary", height = "338px")
+      )
+    ),
+    
+    fluidRow(
+      box(
+        title = "Data Karyawan", width = 12,
+        solidHeader = TRUE, status = "primary", DTOutput("emp_table")
+      )
+    ),
+    
+    fluidRow(
+      box(
+        title = "Peta Lokasi Kantor", width = 12,
+        solidHeader = TRUE, status = "primary", leafletOutput("map")
+      )
+    )
+  )
+)
+
+# =======================
+# SERVER
+# =======================
+server <- function(input, output, session) {
+  
+  filteredData <- reactive({
+    data <- emp_data
+    if (input$dept != "All") data <- filter(data, DEPARTMENT_NAME == input$dept)
+    if (input$job != "All")  data <- filter(data, JOB_TITLE == input$job)
+    data <- filter(data, SALARY >= input$salary[1], SALARY <= input$salary[2])
+    data <- filter(data, HIRE_DATE >= input$hiredate[1], HIRE_DATE <= input$hiredate[2])
+    data
+  })
+  
+  # VALUE BOXES
+  output$total_karyawan <- renderValueBox({
+    valueBox(
+      value = nrow(filteredData()),
+      subtitle = "Total Karyawan",
+      icon = icon("users"),
+      color = "light-blue"
+    )
+  })
+  
+  output$rata_gaji <- renderValueBox({
+    avg_salary <- mean(filteredData()$SALARY, na.rm = TRUE)
+    valueBox(
+      value = paste0("$ ", comma(round(avg_salary))),
+      subtitle = "Rata-rata Gaji",
+      icon = icon("money-bill-wave"),
+      color = "light-blue"
+    )
+  })
+  
+  output$total_departemen <- renderValueBox({
+    n_dept <- filteredData() %>%
+      filter(!is.na(DEPARTMENT_NAME)) %>%
+      summarise(n = n_distinct(DEPARTMENT_NAME)) %>%
+      pull(n)
+    
+    valueBox(
+      value = n_dept,
+      subtitle = "Jumlah Departemen Aktif",
+      icon = icon("building"),
+      color = "light-blue"
+    )
+  })
+  
+  # BARPLOT
+  output$bar_dept <- renderPlot({
+    dept_count <- filteredData() %>%
+      count(DEPARTMENT_NAME) %>%
+      arrange(n)
+    
+    ggplot(dept_count, aes(x = reorder(DEPARTMENT_NAME, n), y = n)) +
+      geom_bar(stat = "identity", fill = "#1976d2") +
+      coord_flip() +
+      labs(x = "Departemen", y = "Jumlah Karyawan") +
+      theme_minimal(base_size = 14) +
+      theme(
+        plot.background = element_rect(fill = "#1e1e1e"),
+        panel.background = element_rect(fill = "#1e1e1e"),
+        axis.text = element_text(color = "#e0e0e0"),
+        axis.title = element_text(color = "#e0e0e0")
+      )
+  })
+  
+  # HISTOGRAM
+  output$hist_salary <- renderPlot({
+    ggplot(filteredData(), aes(x = SALARY)) +
+      geom_histogram(fill = "#42a5f5", bins = 20, color = "white") +
+      labs(x = "Gaji", y = "Frekuensi") +
+      theme_minimal(base_size = 14) +
+      theme(
+        plot.background = element_rect(fill = "#1e1e1e"),
+        panel.background = element_rect(fill = "#1e1e1e"),
+        axis.text = element_text(color = "#e0e0e0"),
+        axis.title = element_text(color = "#e0e0e0")
+      )
+  })
+  
+  # PIE CHART
+  output$pie_dept <- renderPlot({
+    pie_data <- filteredData() %>%
+      filter(!is.na(DEPARTMENT_NAME)) %>%
+      count(DEPARTMENT_NAME) %>%
+      arrange(desc(n)) %>%
+      mutate(
+        prop = round(n / sum(n) * 100, 1),
+        label = paste0(DEPARTMENT_NAME, " (", prop, "%)")
+      )
+    
+    n_colors <- nrow(pie_data)
+    fill_colors <- rep_len(c("#1976d2", "#42a5f5", "#b0bec5"), n_colors)
+    
+    ggplot(pie_data, aes(x = "", y = n, fill = label)) +
+      geom_col(width = 1, color = "#121212") +
+      coord_polar(theta = "y") +
+      scale_fill_manual(values = fill_colors) +
+      theme_void() +
+      theme(
+        plot.background  = element_rect(fill = "#121212", color = NA),
+        panel.background = element_rect(fill = "#121212", color = NA),
+        legend.background = element_rect(fill = "#121212"),
+        legend.text = element_text(color = "#e0e0e0"),
+        legend.title = element_blank()
+      )
+  })
+  
+  # BOXPLOT
+  output$boxplot_salary <- renderPlot({
+    ggplot(filteredData(), aes(x = DEPARTMENT_NAME, y = SALARY)) +
+      geom_boxplot(fill = "#1976d2", color = "white") +
+      coord_flip() +
+      labs(x = "Departemen", y = "Gaji") +
+      theme_minimal(base_size = 14) +
+      theme(
+        plot.background = element_rect(fill = "#1e1e1e"),
+        panel.background = element_rect(fill = "#1e1e1e"),
+        axis.text = element_text(color = "#e0e0e0"),
+        axis.title = element_text(color = "#e0e0e0")
+      )
+  })
+  
+  # DATA TABLE
+  output$emp_table <- renderDT({
+    filteredData() %>%
+      select(EMPLOYEE_ID, FIRST_NAME, LAST_NAME, DEPARTMENT_NAME, JOB_TITLE, SALARY, HIRE_DATE)
+  }, options = list(pageLength = 10, autoWidth = TRUE))
+  
+  # LEAFLET MAP
+  output$map <- renderLeaflet({
+    map_data <- filteredData() %>%
+      filter(!is.na(Lat), !is.na(Lon), is.finite(Lat), is.finite(Lon)) %>%
+      group_by(CITY, Lat, Lon) %>%
+      summarise(JumlahKaryawan = n(), .groups = "drop")
+    
+    if (nrow(map_data) == 0) {
+      leaflet() %>%
+        addProviderTiles(providers$CartoDB.Positron) %>%
+        addPopups(0, 0, "Tidak ada data lokasi tersedia")
+    } else {
+      leaflet(map_data) %>%
+        addProviderTiles(providers$CartoDB.Positron) %>%
+        addCircleMarkers(
+          lng = ~Lon,
+          lat = ~Lat,
+          radius = ~sqrt(JumlahKaryawan) * 2,
+          color = "#1976d2",
+          fillOpacity = 0.7,
+          popup = ~paste0(
+            "<b>Kota:</b> ", CITY,
+            "<br><b>Jumlah Karyawan:</b> ", JumlahKaryawan
+          )
+        )
+    }
+  })
+}
+
+# =======================
+# RUN APP
+# =======================
+shinyApp(ui, server)
